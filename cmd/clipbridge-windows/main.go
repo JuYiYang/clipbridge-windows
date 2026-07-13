@@ -13,6 +13,7 @@ import (
 	"github.com/JuYiYang/clipbridge-windows/internal/clipboard"
 	"github.com/JuYiYang/clipbridge-windows/internal/config"
 	"github.com/JuYiYang/clipbridge-windows/internal/settingsweb"
+	"github.com/JuYiYang/clipbridge-windows/internal/singleinstance"
 	"github.com/JuYiYang/clipbridge-windows/internal/state"
 	"github.com/JuYiYang/clipbridge-windows/internal/syncclient"
 	"github.com/JuYiYang/clipbridge-windows/internal/tray"
@@ -38,6 +39,16 @@ func main() {
 		logger.Info("sample config written", "path", path)
 		return
 	}
+
+	instanceLock, err := singleinstance.Acquire()
+	if err != nil {
+		if err == singleinstance.ErrAlreadyRunning {
+			logger.Info("clipbridge windows is already running")
+			return
+		}
+		fatal(logger, err)
+	}
+	defer instanceLock.Release()
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
