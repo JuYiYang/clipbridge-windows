@@ -22,6 +22,9 @@ Implemented:
 - native Windows tray menu
 - local settings page opened from the tray
 - Windows clipboard text polling through Win32 APIs
+- cloud item restore into the Windows clipboard
+- tray and executable icon resources
+- Windows executable version metadata
 - Stable local device ID
 - Local JSON config and state files
 - `POST /v1/clipboard/items`
@@ -33,7 +36,6 @@ Planned:
 - background startup
 - installer
 - Windows Credential Manager or DPAPI for token storage
-- optional cloud item restore into the Windows clipboard
 - images, HTML, RTF, and files
 - end-to-end encryption envelopes
 
@@ -42,12 +44,18 @@ Planned:
 From this repository:
 
 ```sh
+python3 scripts/generate_windows_resources.py
+(cd cmd/clipbridge-windows && goversioninfo -64 -icon ../../assets/clipbridge.ico -o rsrc_windows_amd64.syso versioninfo.json)
 go test ./...
-GOOS=windows GOARCH=amd64 go build -o dist/clipbridge-windows.exe ./cmd/clipbridge-windows
+GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui" -o dist/clipbridge-windows.exe ./cmd/clipbridge-windows
 ```
 
 The clipboard watcher only runs on Windows. On macOS/Linux the binary will start
 but exit with an unsupported-platform error.
+
+`assets/clipbridge.ico` is generated from the macOS `StatusBarMenuImage`
+asset. `cmd/clipbridge-windows/rsrc_windows_amd64.syso` embeds the tray/app icon
+and Windows file properties into the executable.
 
 ## Configure
 
@@ -113,6 +121,8 @@ text that should be reported to ClipBridge Server.
 
 Tray actions:
 
+- Left-click the tray icon to open the local settings page.
+- Right-click the tray icon to show the tray menu.
 - `设置...` opens the local settings page.
 - `立即同步` triggers a cloud pull immediately.
 - `退出` stops the agent.

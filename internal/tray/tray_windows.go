@@ -18,8 +18,10 @@ const (
 	wmDestroy       = 0x0002
 	wmCommand       = 0x0111
 	wmClose         = 0x0010
+	wmNull          = 0x0000
 	wmUser          = 0x0400
 	wmTray          = wmUser + 1
+	wmLButtonUp     = 0x0202
 	wmLButtonDblClk = 0x0203
 	wmRButtonUp     = 0x0205
 
@@ -32,6 +34,7 @@ const (
 	swShow = 5
 
 	idiApplication = 32512
+	iconResourceID = 1
 
 	menuSettings = 1001
 	menuSyncNow  = 1002
@@ -144,7 +147,10 @@ func Run(ctx context.Context, options Options) error {
 	}
 
 	menu := createMenu()
-	icon, _, _ := procLoadIcon.Call(0, uintptr(idiApplication))
+	icon, _, _ := procLoadIcon.Call(instance, uintptr(iconResourceID))
+	if icon == 0 {
+		icon, _, _ = procLoadIcon.Call(0, uintptr(idiApplication))
+	}
 	state := &runtimeState{
 		options: options,
 		hwnd:    hwnd,
@@ -199,7 +205,7 @@ func wndProc(hwnd uintptr, message uint32, wParam uintptr, lParam uintptr) uintp
 	switch message {
 	case wmTray:
 		switch lParam {
-		case wmLButtonDblClk:
+		case wmLButtonUp, wmLButtonDblClk:
 			openSettings()
 			return 0
 		case wmRButtonUp:
@@ -240,6 +246,7 @@ func showMenu(hwnd uintptr) {
 	procSetForeground.Call(hwnd)
 	if current != nil {
 		procTrackPopupMenu.Call(current.menu, tpmRightButton, uintptr(cursor.X), uintptr(cursor.Y), 0, hwnd, 0)
+		procPostMessage.Call(hwnd, wmNull, 0, 0)
 	}
 }
 
