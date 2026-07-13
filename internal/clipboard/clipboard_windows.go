@@ -25,6 +25,7 @@ var (
 	procEmptyClipboard        = user32.NewProc("EmptyClipboard")
 	procSetClipboardData      = user32.NewProc("SetClipboardData")
 	procGlobalAlloc           = kernel32.NewProc("GlobalAlloc")
+	procGlobalFree            = kernel32.NewProc("GlobalFree")
 	procGlobalLock            = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock          = kernel32.NewProc("GlobalUnlock")
 )
@@ -61,10 +62,13 @@ func (w *PollingWatcher) Run(ctx context.Context) error {
 			if sequence == 0 || sequence == lastSequence {
 				continue
 			}
-			lastSequence = sequence
 
 			text, err := readUnicodeText()
-			if err != nil || text == "" {
+			if err != nil {
+				continue
+			}
+			lastSequence = sequence
+			if text == "" {
 				continue
 			}
 
@@ -88,12 +92,8 @@ func readUnicodeText() (string, error) {
 		return "", nil
 	}
 
-	opened, _, err := procOpenClipboard.Call(0)
-	if opened == 0 {
-		if err != syscall.Errno(0) {
-			return "", err
-		}
-		return "", errors.New("open clipboard failed")
+	if err := openClipboardWithRetry(context.Background(), 250*time.Millisecond); err != nil {
+		return "", err
 	}
 	defer procCloseClipboard.Call()
 
@@ -118,38 +118,13 @@ func readUnicodeText() (string, error) {
 }
 
 func WriteText(ctx context.Context, text string) error {
+	if text == "" {
+		return nil
+	}
+
 	utf16Text, err := syscall.UTF16FromString(text)
 	if err != nil {
 		return err
-	}
-
-	var opened bool
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		result, _, openErr := procOpenClipboard.Call(0)
-		if result != 0 {
-			opened = true
-			break
-		}
-		if !time.Now().Before(deadline) {
-			if openErr != syscall.Errno(0) {
-				return openErr
-			}
-			return errors.New("open clipboard failed")
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(25 * time.Millisecond):
-		}
-	}
-	defer procCloseClipboard.Call()
-
-	if result, _, err := procEmptyClipboard.Call(); result == 0 {
-		if err != syscall.Errno(0) {
-			return err
-		}
-		return errors.New("empty clipboard failed")
 	}
 
 	byteSize := uintptr(len(utf16Text) * 2)
@@ -163,6 +138,7 @@ func WriteText(ctx context.Context, text string) error {
 
 	ptr, _, err := procGlobalLock.Call(handle)
 	if ptr == 0 {
+		procGlobalFree.Call(handle)
 		if err != syscall.Errno(0) {
 			return err
 		}
@@ -171,15 +147,50 @@ func WriteText(ctx context.Context, text string) error {
 	copy(unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(utf16Text)), utf16Text)
 	procGlobalUnlock.Call(handle)
 
+	if err := openClipboardWithRetry(ctx, 500*time.Millisecond); err != nil {
+		procGlobalFree.Call(handle)
+		return err
+	}
+	defer procCloseClipboard.Call()
+
+	if result, _, err := procEmptyClipboard.Call(); result == 0 {
+		procGlobalFree.Call(handle)
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return errors.New("empty clipboard failed")
+	}
+
 	if result, _, err := procSetClipboardData.Call(uintptr(cfUnicodeText), handle); result == 0 {
+		procGlobalFree.Call(handle)
 		if err != syscall.Errno(0) {
 			return err
 		}
 		return errors.New("set clipboard data failed")
 	}
 
-	_ = opened
 	return nil
+}
+
+func openClipboardWithRetry(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		result, _, err := procOpenClipboard.Call(0)
+		if result != 0 {
+			return nil
+		}
+		if !time.Now().Before(deadline) {
+			if err != syscall.Errno(0) {
+				return err
+			}
+			return errors.New("open clipboard failed")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 func utf16PtrToString(ptr *uint16) string {
