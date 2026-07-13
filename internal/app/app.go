@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log/slog"
 	"sync"
@@ -28,6 +29,8 @@ type App struct {
 	lastSyncedAt    time.Time
 	lastUploadedAt  time.Time
 	lastUploaded    string
+	suppressedText  string
+	suppressUntil   time.Time
 	syncNowRequests chan struct{}
 }
 
@@ -147,6 +150,11 @@ func (a *App) Status() Status {
 }
 
 func (a *App) uploadText(ctx context.Context, event clipboard.Event) error {
+	if a.shouldSuppressUpload(event.Text) {
+		a.logger.Info("ignored clipboard event applied from cloud")
+		return nil
+	}
+
 	if !a.isConfigured() {
 		return nil
 	}
@@ -201,10 +209,24 @@ func (a *App) pull(ctx context.Context) error {
 	}
 
 	remoteCount := 0
+	var latestText string
+	var latestCopiedAt time.Time
 	for _, item := range response.Items {
 		if item.SourceDeviceID != deviceID {
 			remoteCount += 1
+			text, ok := plainText(item)
+			if ok && (latestCopiedAt.IsZero() || item.LastCopiedAt.After(latestCopiedAt)) {
+				latestText = text
+				latestCopiedAt = item.LastCopiedAt
+			}
 		}
+	}
+
+	if latestText != "" {
+		if err := clipboard.WriteText(ctx, latestText); err != nil {
+			return err
+		}
+		a.suppressCloudAppliedText(latestText)
 	}
 
 	a.mu.Lock()
@@ -223,7 +245,7 @@ func (a *App) pull(ctx context.Context) error {
 	}
 
 	if remoteCount > 0 {
-		a.logger.Info("pulled remote clipboard records", "count", remoteCount)
+		a.logger.Info("pulled remote clipboard records", "count", remoteCount, "applied", latestText != "")
 	}
 	return nil
 }
@@ -254,4 +276,36 @@ func (a *App) recordError(err error) {
 
 func (a *App) isConfigured() bool {
 	return a.currentConfig().ServerURL != ""
+}
+
+func (a *App) suppressCloudAppliedText(text string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.suppressedText = text
+	a.suppressUntil = time.Now().Add(5 * time.Second)
+}
+
+func (a *App) shouldSuppressUpload(text string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.suppressedText == "" || text != a.suppressedText || time.Now().After(a.suppressUntil) {
+		return false
+	}
+	a.suppressedText = ""
+	a.suppressUntil = time.Time{}
+	return true
+}
+
+func plainText(item protocol.ClipboardItem) (string, bool) {
+	for _, content := range item.Contents {
+		if content.Type != protocol.PlainTextType {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(content.Value)
+		if err != nil {
+			return "", false
+		}
+		return string(data), true
+	}
+	return "", false
 }

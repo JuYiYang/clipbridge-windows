@@ -25,3 +25,7 @@ func (w *PollingWatcher) Run(context.Context) error {
 	close(w.events)
 	return fmt.Errorf("clipboard watcher is only available on Windows; current platform is %s", runtime.GOOS)
 }
+
+func WriteText(context.Context, string) error {
+	return fmt.Errorf("clipboard writer is only available on Windows; current platform is %s", runtime.GOOS)
+}

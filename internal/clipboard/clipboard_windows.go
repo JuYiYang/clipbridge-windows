@@ -12,6 +12,7 @@ import (
 )
 
 const cfUnicodeText = 13
+const gmemMoveable = 0x0002
 
 var (
 	user32                    = syscall.NewLazyDLL("user32.dll")
@@ -21,6 +22,9 @@ var (
 	procOpenClipboard         = user32.NewProc("OpenClipboard")
 	procCloseClipboard        = user32.NewProc("CloseClipboard")
 	procGetClipboardData      = user32.NewProc("GetClipboardData")
+	procEmptyClipboard        = user32.NewProc("EmptyClipboard")
+	procSetClipboardData      = user32.NewProc("SetClipboardData")
+	procGlobalAlloc           = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock            = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock          = kernel32.NewProc("GlobalUnlock")
 )
@@ -111,6 +115,71 @@ func readUnicodeText() (string, error) {
 	defer procGlobalUnlock.Call(handle)
 
 	return utf16PtrToString((*uint16)(unsafe.Pointer(ptr))), nil
+}
+
+func WriteText(ctx context.Context, text string) error {
+	utf16Text, err := syscall.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+
+	var opened bool
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		result, _, openErr := procOpenClipboard.Call(0)
+		if result != 0 {
+			opened = true
+			break
+		}
+		if !time.Now().Before(deadline) {
+			if openErr != syscall.Errno(0) {
+				return openErr
+			}
+			return errors.New("open clipboard failed")
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	defer procCloseClipboard.Call()
+
+	if result, _, err := procEmptyClipboard.Call(); result == 0 {
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return errors.New("empty clipboard failed")
+	}
+
+	byteSize := uintptr(len(utf16Text) * 2)
+	handle, _, err := procGlobalAlloc.Call(uintptr(gmemMoveable), byteSize)
+	if handle == 0 {
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return errors.New("allocate clipboard memory failed")
+	}
+
+	ptr, _, err := procGlobalLock.Call(handle)
+	if ptr == 0 {
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return errors.New("lock clipboard memory failed")
+	}
+	copy(unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(utf16Text)), utf16Text)
+	procGlobalUnlock.Call(handle)
+
+	if result, _, err := procSetClipboardData.Call(uintptr(cfUnicodeText), handle); result == 0 {
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return errors.New("set clipboard data failed")
+	}
+
+	_ = opened
+	return nil
 }
 
 func utf16PtrToString(ptr *uint16) string {
