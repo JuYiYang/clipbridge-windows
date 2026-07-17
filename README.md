@@ -57,6 +57,9 @@ but exit with an unsupported-platform error.
 asset. `cmd/clipbridge-windows/rsrc_windows_amd64.syso` embeds the tray/app icon
 and Windows file properties into the executable.
 
+Release packaging and GitHub Release automation are documented in
+[docs/release.md](docs/release.md).
+
 ## Configure
 
 Launch the app and use the tray menu:
